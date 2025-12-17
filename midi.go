@@ -12,8 +12,8 @@ import (
 type Note struct {
 	Key      uint8
 	Velocity uint8
-	Start    float64 
-	End      float64 
+	Start    float64
+	End      float64
 	Channel  uint8
 }
 
@@ -23,292 +23,205 @@ type TempoChange struct {
 }
 
 func ParseMidi(filename string) ([]Note, error) {
-	res, err := smf.ReadFile(filename)
+	data, err := smf.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	resolution, ok := res.TimeFormat.(smf.MetricTicks)
-	if !ok {
-		return nil, fmt.Errorf("unsupported time format: %v", res.TimeFormat)
-	}
-	ticksPerQuarter := float64(resolution)
-
-	var tempoChanges []TempoChange
-	tempoChanges = append(tempoChanges, TempoChange{Tick: 0, BPM: 120.0})
-
-	for _, track := range res.Tracks {
-		var absTick int64 = 0
-		for _, event := range track {
-			absTick += int64(event.Delta)
-			msg := event.Message
-			var bpm float64
-			if msg.GetMetaTempo(&bpm) {
-				tempoChanges = append(tempoChanges, TempoChange{Tick: absTick, BPM: bpm})
-			}
-		}
-	}
-
-	sort.Slice(tempoChanges, func(i, j int) bool {
-		return tempoChanges[i].Tick < tempoChanges[j].Tick
-	})
-
-	tickToSeconds := func(tick int64) float64 {
-		var seconds float64 = 0
-		var lastTick int64 = 0
-		var currentBPM float64 = 120.0
-
-		for _, tc := range tempoChanges {
-			if tick < tc.Tick {
-				break
-			}
-			delta := tc.Tick - lastTick
-			seconds += (float64(delta) / ticksPerQuarter) * (60.0 / currentBPM)
-
-			lastTick = tc.Tick
-			currentBPM = tc.BPM
-		}
-		if tick > lastTick {
-			delta := tick - lastTick
-			seconds += (float64(delta) / ticksPerQuarter) * (60.0 / currentBPM)
-		}
-		return seconds
-	}
-
 	var notes []Note
 
-	for _, track := range res.Tracks {
-		var absTick int64 = 0
-		trackActiveNotes := make(map[uint8]map[uint8]*Note)
+	// Process each track independently
+	for _, track := range data.Tracks {
+		// Track active notes for this track: map[channel][key] -> list of (startTick, velocity)
+		// Using a slice to handle multiple notes of same key overlapping
+		type noteOn struct {
+			tick     int64
+			velocity uint8
+		}
+		activeNotes := make(map[uint8]map[uint8][]noteOn)
 
-		for _, event := range track {
-			absTick += int64(event.Delta)
-			msg := event.Message
+		var absTick int64
+		for _, ev := range track {
+			absTick += int64(ev.Delta)
 
 			var channel, key, velocity uint8
-			switch {
-			case msg.GetNoteOn(&channel, &key, &velocity):
-				if channel == 9 {
-					continue
-				}
+			if ev.Message.GetNoteOn(&channel, &key, &velocity) {
 				if velocity > 0 {
-					if _, ok := trackActiveNotes[channel]; !ok {
-						trackActiveNotes[channel] = make(map[uint8]*Note)
+					// Note On - add to the list
+					if activeNotes[channel] == nil {
+						activeNotes[channel] = make(map[uint8][]noteOn)
 					}
-
-					if existing, ok := trackActiveNotes[channel][key]; ok {
-						existing.End = tickToSeconds(absTick)
-						notes = append(notes, *existing)
-					}
-
-					newNote := &Note{
-						Key:      key,
-						Velocity: velocity,
-						Start:    tickToSeconds(absTick),
-						Channel:  channel,
-					}
-					trackActiveNotes[channel][key] = newNote
+					activeNotes[channel][key] = append(activeNotes[channel][key], noteOn{tick: absTick, velocity: velocity})
 				} else {
-					if chMap, ok := trackActiveNotes[channel]; ok {
-						if note, ok := chMap[key]; ok {
-							note.End = tickToSeconds(absTick)
-							notes = append(notes, *note)
-							delete(chMap, key)
+					// Note On with velocity 0 = Note Off
+					if activeNotes[channel] != nil && len(activeNotes[channel][key]) > 0 {
+						// Pop the first note (FIFO)
+						on := activeNotes[channel][key][0]
+						activeNotes[channel][key] = activeNotes[channel][key][1:]
+
+						startTime := float64(data.TimeAt(on.tick)) / 1000000.0
+						endTime := float64(data.TimeAt(absTick)) / 1000000.0
+
+						// Skip zero-duration notes
+						if endTime > startTime {
+							notes = append(notes, Note{
+								Key:      key,
+								Velocity: on.velocity,
+								Start:    startTime,
+								End:      endTime,
+								Channel:  channel,
+							})
 						}
 					}
 				}
-			case msg.GetNoteOff(&channel, &key, &velocity):
-				if chMap, ok := trackActiveNotes[channel]; ok {
-					if note, ok := chMap[key]; ok {
-						note.End = tickToSeconds(absTick)
-						notes = append(notes, *note)
-						delete(chMap, key)
+			} else if ev.Message.GetNoteOff(&channel, &key, &velocity) {
+				// Note Off
+				if activeNotes[channel] != nil && len(activeNotes[channel][key]) > 0 {
+					// Pop the first note (FIFO)
+					on := activeNotes[channel][key][0]
+					activeNotes[channel][key] = activeNotes[channel][key][1:]
+
+					startTime := float64(data.TimeAt(on.tick)) / 1000000.0
+					endTime := float64(data.TimeAt(absTick)) / 1000000.0
+
+					// Skip zero-duration notes
+					if endTime > startTime {
+						notes = append(notes, Note{
+							Key:      key,
+							Velocity: on.velocity,
+							Start:    startTime,
+							End:      endTime,
+							Channel:  channel,
+						})
 					}
 				}
 			}
 		}
 	}
 
-	fmt.Printf("Parsed %d notes\n", len(notes))
+	// Sort notes by start time
+	sort.Slice(notes, func(i, j int) bool {
+		return notes[i].Start < notes[j].Start
+	})
+
+	fmt.Printf("Parsed %d notes from MIDI file\n", len(notes))
 	return notes, nil
 }
 
 func GraphMidi(filename string) {
-	graph("T=0")
-	graph("x=T")
 	notes, err := ParseMidi(filename)
 	if err != nil {
-		panic(err)
+		fmt.Println("Error parsing MIDI:", err)
+		return
 	}
-	sort.Slice(notes, func(i, j int) bool {
-		return notes[i].Start < notes[j].Start
-	})
-	
-	var fVars, sVars, eVars, vVars []string
 
-	for i := 0; i < len(notes); i += chunkSize {
-		end := min(i+chunkSize, len(notes))
-
-		var sb strings.Builder
-		sb.WriteString("[")
-		for j, n := range notes[i:end] {
-			if j > 0 {
-				sb.WriteString(",")
-			}
-			fmt.Fprintf(&sb, "(%f, %d), (%f, %d), (0/0, 0/0)", n.Start, n.Key, n.End, n.Key)
+	// Filter out drum channel (channel 9, which is 10 in 1-indexed MIDI)
+	var filteredNotes []Note
+	for _, note := range notes {
+		if note.Channel != 9 {
+			filteredNotes = append(filteredNotes, note)
 		}
-		sb.WriteString("]")
-		graph(sb.String())
+	}
+	notes = filteredNotes
+	fmt.Printf("After filtering drums: %d notes\n", len(notes))
 
-		var freqSB, startSB, endSB, velSB strings.Builder
-		freqSB.WriteString("[")
-		startSB.WriteString("[")
-		endSB.WriteString("[")
-		velSB.WriteString("[")
-
-		for j, n := range notes[i:end] {
-			if j > 0 {
-				freqSB.WriteString(",")
-				startSB.WriteString(",")
-				endSB.WriteString(",")
-				velSB.WriteString(",")
-			}
-			fmt.Fprintf(&freqSB, "%.2f", MidiToHz(int(n.Key)))
-			fmt.Fprintf(&startSB, "%.2f", n.Start)
-			fmt.Fprintf(&endSB, "%.2f", n.End)
-
-			vol := float64(n.Velocity) / 127.0
-			scale := 1.0 - (float64(n.Key)-60.0)*0.01
-
-			finalVol := vol * scale * 1
-			if finalVol > 1.0 {
-				finalVol = 1.0
-			} else if finalVol < 0.0 {
-				finalVol = 0.0
-			}
-			fmt.Fprintf(&velSB, "%.2f", finalVol)
+	// Find the total duration
+	var maxEnd float64
+	for _, note := range notes {
+		if note.End > maxEnd {
+			maxEnd = note.End
 		}
-		freqSB.WriteString("]")
-		startSB.WriteString("]")
-		endSB.WriteString("]")
-		velSB.WriteString("]")
-
-		id := fmt.Sprintf("%d", i/chunkSize)
-		fVar := "F_{" + id + "}"
-		sVar := "S_{" + id + "}"
-		eVar := "E_{" + id + "}"
-		vVar := "V_{" + id + "}"
-
-		graph(fVar + "=" + freqSB.String())
-		graph(sVar + "=" + startSB.String())
-		graph(eVar + "=" + endSB.String())
-		graph(vVar + "=" + velSB.String())
-
-		fVars = append(fVars, fVar)
-		sVars = append(sVars, sVar)
-		eVars = append(eVars, eVar)
-		vVars = append(vVars, vVar)
 	}
 
-	var tones []string
-	for i := range fVars {
-		id := fmt.Sprintf("%d", i)
-		dVar := fmt.Sprintf("D_{%s}", id)
-		fVar := fVars[i]
-		sVar := sVars[i]
-		eVar := eVars[i]
-		vVar := vVars[i]
+	// Create time slider
+	graph("t=0")
+	page.MustEval(`(id, min, max) => {
+		Calc.setExpression({ id: id, latex: "t=0", sliderBounds: { min: min, max: max } });
+	}`, fmt.Sprint(id), "0", fmt.Sprintf("%.2f", maxEnd))
 
-		graph(fmt.Sprintf("%s = (T - %s) * (%s - T)", dVar, sVar, eVar))
-		tones = append(tones, fmt.Sprintf("tone(%s[%s >= 0], %s[%s >= 0])", fVar, dVar, vVar, dVar))
+	// Create individual tone expressions for each note
+	// Volume is based on velocity (0-127 -> 0-1)
+	// Round times to 3 decimal places to avoid floating point issues
+	for _, note := range notes {
+		freq := MidiToHz(int(note.Key))
+		volume := float64(note.Velocity) / 127.0
+		start := math.Round(note.Start*1000) / 1000
+		end := math.Round(note.End*1000) / 1000
+		// Tone is active only when t is within the note's time range
+		toneExpr := fmt.Sprintf("\\operatorname{tone}(%.2f, %.3f\\{%.3f<t<%.3f\\})", freq, volume, start, end)
+		graph(toneExpr)
 	}
-	for _, v := range tones {
-		graph(v)
+
+	// Group notes into chunks for Desmos visualization
+	var chunks [][]Note
+	for i := 0; i < len(notes); i += chunk {
+		end := i + chunk
+		if end > len(notes) {
+			end = len(notes)
+		}
+		chunks = append(chunks, notes[i:end])
 	}
+
+	for _, chunk := range chunks {
+		var points []string
+		for _, note := range chunk {
+			freq := MidiToHz(int(note.Key))
+			// Create point: (start_time, frequency)
+			points = append(points, fmt.Sprintf("(%.3f, %.2f)", note.Start, freq))
+		}
+		latex := strings.Join(points, ",")
+		graph(latex)
+	}
+
+	fmt.Printf("Graphed %d notes in %d chunks (playable with slider t)\n", len(notes), len(chunks))
+	fmt.Println("Animate the t slider to play the music!")
 }
 
-
 func GraphMidiNoVis(filename string) {
-	graph("T=0")
-	graph("x=T")
 	notes, err := ParseMidi(filename)
 	if err != nil {
-		panic(err)
+		fmt.Println("Error parsing MIDI:", err)
+		return
 	}
-	sort.Slice(notes, func(i, j int) bool {
-		return notes[i].Start < notes[j].Start
-	})
-	chunkSize := 500
-	var fVars, sVars, eVars, vVars []string
 
-	for i := 0; i < len(notes); i += chunkSize {
-		end := min(i+chunkSize, len(notes))
-
-		var freqSB, startSB, endSB, velSB strings.Builder
-		freqSB.WriteString("[")
-		startSB.WriteString("[")
-		endSB.WriteString("[")
-		velSB.WriteString("[")
-
-		for j, n := range notes[i:end] {
-			if j > 0 {
-				freqSB.WriteString(",")
-				startSB.WriteString(",")
-				endSB.WriteString(",")
-				velSB.WriteString(",")
-			}
-			fmt.Fprintf(&freqSB, "%.2f", MidiToHz(int(n.Key)))
-			fmt.Fprintf(&startSB, "%.2f", n.Start)
-			fmt.Fprintf(&endSB, "%.2f", n.End)
-
-			vol := float64(n.Velocity) / 127.0
-			scale := 1.0 - (float64(n.Key)-60.0)*0.01
-
-			finalVol := vol * scale * 1
-			if finalVol > 1.0 {
-				finalVol = 1.0
-			} else if finalVol < 0.0 {
-				finalVol = 0.0
-			}
-			fmt.Fprintf(&velSB, "%.2f", finalVol)
+	// Filter out drum channel (channel 9)
+	var filteredNotes []Note
+	for _, note := range notes {
+		if note.Channel != 9 {
+			filteredNotes = append(filteredNotes, note)
 		}
-		freqSB.WriteString("]")
-		startSB.WriteString("]")
-		endSB.WriteString("]")
-		velSB.WriteString("]")
+	}
+	notes = filteredNotes
+	fmt.Printf("After filtering drums: %d notes\n", len(notes))
 
-		id := fmt.Sprintf("%d", i/chunkSize)
-		fVar := "F_{" + id + "}"
-		sVar := "S_{" + id + "}"
-		eVar := "E_{" + id + "}"
-		vVar := "V_{" + id + "}"
-
-		graph(fVar + "=" + freqSB.String())
-		graph(sVar + "=" + startSB.String())
-		graph(eVar + "=" + endSB.String())
-		graph(vVar + "=" + velSB.String())
-
-		fVars = append(fVars, fVar)
-		sVars = append(sVars, sVar)
-		eVars = append(eVars, eVar)
-		vVars = append(vVars, vVar)
+	// Find the total duration
+	var maxEnd float64
+	for _, note := range notes {
+		if note.End > maxEnd {
+			maxEnd = note.End
+		}
 	}
 
-	var tones []string
-	for i := range fVars {
-		id := fmt.Sprintf("%d", i)
-		dVar := fmt.Sprintf("D_{%s}", id)
-		fVar := fVars[i]
-		sVar := sVars[i]
-		eVar := eVars[i]
-		vVar := vVars[i]
+	// Create time slider
+	graph("t=0")
+	page.MustEval(`(id, min, max) => {
+		Calc.setExpression({ id: id, latex: "t=0", sliderBounds: { min: min, max: max } });
+	}`, fmt.Sprint(id), "0", fmt.Sprintf("%.2f", maxEnd))
 
-		graph(fmt.Sprintf("%s = (T - %s) * (%s - T)", dVar, sVar, eVar))
-		tones = append(tones, fmt.Sprintf("tone(%s[%s >= 0], %s[%s >= 0])", fVar, dVar, vVar, dVar))
+	// Create individual tone expressions for each note
+	// Volume is based on velocity (0-127 -> 0-1)
+	for _, note := range notes {
+		freq := MidiToHz(int(note.Key))
+		volume := float64(note.Velocity) / 127.0
+		start := math.Round(note.Start*1000) / 1000
+		end := math.Round(note.End*1000) / 1000
+		// Tone is active only when t is within the note's time range
+		toneExpr := fmt.Sprintf("\\operatorname{tone}(%.2f, %.3f\\{%.3f<t<%.3f\\})", freq, volume, start, end)
+		graph(toneExpr)
 	}
-	for _, v := range tones {
-		graph(v)
-	}
+
+	fmt.Printf("Graphed %d notes (no visualization, playable with slider t)\n", len(notes))
+	fmt.Println("Animate the t slider to play the music!")
 }
 
 func MidiToHz(m int) float64 {
@@ -320,4 +233,14 @@ func MidiToHz(m int) float64 {
 	frequency := a4Freq * math.Pow(2.0, (float64(m-a4Midi)/12.0))
 
 	return frequency
+}
+
+func graph(latex string) {
+
+	page.MustEval(`(id, latex) => {
+		Calc.setExpression({ id: id, latex: latex , pointSize: 2});
+	}`, func() string {
+		id++
+		return fmt.Sprint(id)
+	}(), latex)
 }

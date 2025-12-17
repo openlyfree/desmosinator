@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-rod/rod"
@@ -13,52 +14,79 @@ import (
 var browser *rod.Browser
 var page *rod.Page
 var id int
-var chunkSize int
+var chunk int
+var step int
+var novis bool
 
 func main() {
-	chunkSize = func() int {
-		for _, v := range os.Args {
+	getConfig()
+
+	browser = rod.New().ControlURL(launcher.New().Leakless(false).Headless(false).MustLaunch()).MustConnect()
+	page = browser.MustPage("https://www.desmos.com/calculator").MustWaitStable()
+
+	if len(os.Args) > 1 {
+		if strings.Contains(os.Args[1], "http") && strings.Contains(os.Args[1], "musescore") {
+			wd, _ := os.Getwd()
+			tempDir := filepath.Join(wd, "temp")
+			exec.Command("npx", "dl-librescore@latest", "-i", os.Args[1], "-t", "midi", "-o", "temp").Run()
+			files, _ := os.ReadDir(tempDir)
+			for _, file := range files {
+				if strings.HasSuffix(file.Name(), ".mid") || strings.HasSuffix(file.Name(), ".midi") {
+					os.Rename(filepath.Join(tempDir, file.Name()), filepath.Join(tempDir, "temp.mid"))
+					break
+				}
+			}
+
+			if novis {
+				GraphMidiNoVis(filepath.Join(tempDir, "temp.mid"))
+			} else {
+				GraphMidi(filepath.Join(tempDir, "temp.mid"))
+			}
+			os.RemoveAll(tempDir)
+		} else {
+			if strings.Contains(os.Args[1], ".mid") {
+				GraphMidi(os.Args[1])
+			} else {
+				GraphPhoto(os.Args[1])
+			}
+
+		}
+	}
+}
+
+
+func getConfig()  {
+	chunk = func() int {
+		for i, v := range os.Args {
 			if strings.HasPrefix(v, "-cs") {
-				var i int
-				fmt.Sscanf(strings.ReplaceAll(v, "-nv", ""), "%d", &i)
-				return i
+				var z int
+				fmt.Sscanf(strings.ReplaceAll(v, "-cs", ""), "%d", &z)
+				os.Args = append(os.Args[:i], os.Args[i+1:]...)
+				return z
 			}
 		}
 		return 500
 	}()
 
-	browser = rod.New().ControlURL(launcher.New().Leakless(false).Headless(false).MustLaunch()).MustConnect()
-	page = browser.MustPage("https://www.desmos.com/calculator").MustWaitStable()
-	nv := func() bool {
-		for _, v := range os.Args {
+	step = func() int {
+		for i, v := range os.Args {
+			if strings.HasPrefix(v, "-step") {
+				var z int
+				fmt.Sscanf(strings.ReplaceAll(v, "-step", ""), "%d", &z)
+				os.Args = append(os.Args[:i], os.Args[i+1:]...)
+				return z
+			}
+		}
+		return 10
+	}()
+
+	novis = func() bool {
+		for i, v := range os.Args {
 			if v == "-nv" {
+				os.Args = append(os.Args[:i], os.Args[i+1:]...)
 				return true
 			}
 		}
 		return false
 	}()
-
-	if len(os.Args) < 1 {
-		if strings.Contains(os.Args[1], "http") {
-			exec.Command("npx", "dl-librescore@latest", "-i", os.Args[1], "-t", "midi", "-o", "temp.mid").Run()
-			if nv {
-				GraphMidiNoVis("temp.mid")
-			} else {
-				GraphMidi("temp.mid")
-			}
-			os.Remove("temp.mid")
-		} else {
-			GraphMidi(os.Args[1])
-		}
-	}
-}
-
-func graph(latex string) {
-
-	page.MustEval(`(id, latex) => {
-		Calc.setExpression({ id: id, latex: latex , pointSize: 2});
-	}`, func() string {
-		id++
-		return fmt.Sprint(id)
-	}(), latex)
 }
