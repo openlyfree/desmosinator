@@ -11,12 +11,14 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 )
 
-var browser *rod.Browser
-var page *rod.Page
-var id int
-var chunk int
-var step int
-var novis bool
+var (
+	browser *rod.Browser
+	page *rod.Page
+	chunk int
+	step int
+	id int
+	novis bool
+)
 
 func main() {
 	getConfig()
