@@ -47,9 +47,8 @@ func main() {
 				GraphMidi("temp.mid")
 			}
 			os.Remove("temp.mid")
-
 		} else {
-
+			GraphMidi(os.Args[1])
 		}
 	}
 }
