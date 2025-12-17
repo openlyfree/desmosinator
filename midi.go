@@ -12,8 +12,8 @@ import (
 type Note struct {
 	Key      uint8
 	Velocity uint8
-	Start    float64 // in seconds
-	End      float64 // in seconds
+	Start    float64 
+	End      float64 
 	Channel  uint8
 }
 
@@ -28,17 +28,13 @@ func ParseMidi(filename string) ([]Note, error) {
 		return nil, err
 	}
 
-	// Get resolution (ticks per quarter note)
-	// smf.MetricTicks is a uint16
 	resolution, ok := res.TimeFormat.(smf.MetricTicks)
 	if !ok {
 		return nil, fmt.Errorf("unsupported time format: %v", res.TimeFormat)
 	}
 	ticksPerQuarter := float64(resolution)
 
-	// 1. Collect all tempo changes
 	var tempoChanges []TempoChange
-	// Default tempo is 120 BPM
 	tempoChanges = append(tempoChanges, TempoChange{Tick: 0, BPM: 120.0})
 
 	for _, track := range res.Tracks {
@@ -53,12 +49,10 @@ func ParseMidi(filename string) ([]Note, error) {
 		}
 	}
 
-	// Sort tempo changes by tick
 	sort.Slice(tempoChanges, func(i, j int) bool {
 		return tempoChanges[i].Tick < tempoChanges[j].Tick
 	})
 
-	// Helper to convert ticks to seconds
 	tickToSeconds := func(tick int64) float64 {
 		var seconds float64 = 0
 		var lastTick int64 = 0
@@ -68,15 +62,12 @@ func ParseMidi(filename string) ([]Note, error) {
 			if tick < tc.Tick {
 				break
 			}
-			// Add time for the duration between lastTick and tc.Tick
 			delta := tc.Tick - lastTick
 			seconds += (float64(delta) / ticksPerQuarter) * (60.0 / currentBPM)
 
 			lastTick = tc.Tick
 			currentBPM = tc.BPM
 		}
-
-		// Add remaining time
 		if tick > lastTick {
 			delta := tick - lastTick
 			seconds += (float64(delta) / ticksPerQuarter) * (60.0 / currentBPM)
@@ -97,8 +88,6 @@ func ParseMidi(filename string) ([]Note, error) {
 			var channel, key, velocity uint8
 			switch {
 			case msg.GetNoteOn(&channel, &key, &velocity):
-				// Channel 9 is percussion (0-indexed), which produces non-pitched sounds.
-				// We skip it to avoid "zapping" noises from playing drum keys as frequencies.
 				if channel == 9 {
 					continue
 				}
@@ -144,13 +133,9 @@ func ParseMidi(filename string) ([]Note, error) {
 	return notes, nil
 }
 
-
 func GraphMidi(filename string) {
 	graph("T=0")
 	graph("x=T")
-
-	
-
 	notes, err := ParseMidi(filename)
 	if err != nil {
 		panic(err)
@@ -158,13 +143,12 @@ func GraphMidi(filename string) {
 	sort.Slice(notes, func(i, j int) bool {
 		return notes[i].Start < notes[j].Start
 	})
-	chunkSize := 500
+	
 	var fVars, sVars, eVars, vVars []string
 
 	for i := 0; i < len(notes); i += chunkSize {
 		end := min(i+chunkSize, len(notes))
 
-		// Visual Graph commenting it out for lag
 		var sb strings.Builder
 		sb.WriteString("[")
 		for j, n := range notes[i:end] {
@@ -176,7 +160,6 @@ func GraphMidi(filename string) {
 		sb.WriteString("]")
 		graph(sb.String())
 
-		// Audio Lists
 		var freqSB, startSB, endSB, velSB strings.Builder
 		freqSB.WriteString("[")
 		startSB.WriteString("[")
@@ -194,12 +177,9 @@ func GraphMidi(filename string) {
 			fmt.Fprintf(&startSB, "%.2f", n.Start)
 			fmt.Fprintf(&endSB, "%.2f", n.End)
 
-			// Adjust volume based on pitch to balance loudness
-			// Lower notes get a boost, higher notes get attenuated
 			vol := float64(n.Velocity) / 127.0
 			scale := 1.0 - (float64(n.Key)-60.0)*0.01
 
-			// Reduce global volume significantly to prevent clipping with many notes
 			finalVol := vol * scale * 1
 			if finalVol > 1.0 {
 				finalVol = 1.0
@@ -213,7 +193,6 @@ func GraphMidi(filename string) {
 		endSB.WriteString("]")
 		velSB.WriteString("]")
 
-		// Create unique variable names for this chunk
 		id := fmt.Sprintf("%d", i/chunkSize)
 		fVar := "F_{" + id + "}"
 		sVar := "S_{" + id + "}"
@@ -233,7 +212,90 @@ func GraphMidi(filename string) {
 
 	var tones []string
 	for i := range fVars {
-		// We use the index as the ID, matching how we created the vars
+		id := fmt.Sprintf("%d", i)
+		dVar := fmt.Sprintf("D_{%s}", id)
+		fVar := fVars[i]
+		sVar := sVars[i]
+		eVar := eVars[i]
+		vVar := vVars[i]
+
+		graph(fmt.Sprintf("%s = (T - %s) * (%s - T)", dVar, sVar, eVar))
+		tones = append(tones, fmt.Sprintf("tone(%s[%s >= 0], %s[%s >= 0])", fVar, dVar, vVar, dVar))
+	}
+	for _, v := range tones {
+		graph(v)
+	}
+}
+
+
+func GraphMidiNoVis(filename string) {
+	graph("T=0")
+	graph("x=T")
+	notes, err := ParseMidi(filename)
+	if err != nil {
+		panic(err)
+	}
+	sort.Slice(notes, func(i, j int) bool {
+		return notes[i].Start < notes[j].Start
+	})
+	chunkSize := 500
+	var fVars, sVars, eVars, vVars []string
+
+	for i := 0; i < len(notes); i += chunkSize {
+		end := min(i+chunkSize, len(notes))
+
+		var freqSB, startSB, endSB, velSB strings.Builder
+		freqSB.WriteString("[")
+		startSB.WriteString("[")
+		endSB.WriteString("[")
+		velSB.WriteString("[")
+
+		for j, n := range notes[i:end] {
+			if j > 0 {
+				freqSB.WriteString(",")
+				startSB.WriteString(",")
+				endSB.WriteString(",")
+				velSB.WriteString(",")
+			}
+			fmt.Fprintf(&freqSB, "%.2f", MidiToHz(int(n.Key)))
+			fmt.Fprintf(&startSB, "%.2f", n.Start)
+			fmt.Fprintf(&endSB, "%.2f", n.End)
+
+			vol := float64(n.Velocity) / 127.0
+			scale := 1.0 - (float64(n.Key)-60.0)*0.01
+
+			finalVol := vol * scale * 1
+			if finalVol > 1.0 {
+				finalVol = 1.0
+			} else if finalVol < 0.0 {
+				finalVol = 0.0
+			}
+			fmt.Fprintf(&velSB, "%.2f", finalVol)
+		}
+		freqSB.WriteString("]")
+		startSB.WriteString("]")
+		endSB.WriteString("]")
+		velSB.WriteString("]")
+
+		id := fmt.Sprintf("%d", i/chunkSize)
+		fVar := "F_{" + id + "}"
+		sVar := "S_{" + id + "}"
+		eVar := "E_{" + id + "}"
+		vVar := "V_{" + id + "}"
+
+		graph(fVar + "=" + freqSB.String())
+		graph(sVar + "=" + startSB.String())
+		graph(eVar + "=" + endSB.String())
+		graph(vVar + "=" + velSB.String())
+
+		fVars = append(fVars, fVar)
+		sVars = append(sVars, sVar)
+		eVars = append(eVars, eVar)
+		vVars = append(vVars, vVar)
+	}
+
+	var tones []string
+	for i := range fVars {
 		id := fmt.Sprintf("%d", i)
 		dVar := fmt.Sprintf("D_{%s}", id)
 		fVar := fVars[i]
@@ -250,7 +312,6 @@ func GraphMidi(filename string) {
 }
 
 func MidiToHz(m int) float64 {
-	// Formula: f = 440 * 2^((M - 69) / 12)
 	const (
 		a4Midi = 69
 		a4Freq = 440.0
