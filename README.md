@@ -1,7 +1,7 @@
 # desmosinator
 
-Turn MIDI files into playable music in Desmos. Also can draw images pixel-by-pixel because why not.
-Desmos is pretty good at graphing for a music player
+Turn MIDI files into playable music in Desmos. Also can graph images because why not.
+
 Uses Chrome DevTools and Desmos' JavaScript API under the hood.
 
 ## What does it do?
