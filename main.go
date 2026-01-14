@@ -13,21 +13,28 @@ import (
 
 var (
 	browser *rod.Browser
-	page *rod.Page
-	chunk int
-	step int
-	id int
-	novis bool
+	page    *rod.Page
+	chunk   int
+	step    int
+	id      int
+	novis   bool
 )
 
 func main() {
 	getConfig()
 
+	fmt.Println("\n Desmosinator")
+	fmt.Printf("   ├─ Chunk size: %d\n", chunk)
+	fmt.Printf("   ├─ Step: %d\n", step)
+	fmt.Printf("   └─ No visualization: %v\n", novis)
+
+	fmt.Println("\nLaunching Desmos...")
 	browser = rod.New().ControlURL(launcher.New().Leakless(false).Headless(false).MustLaunch()).MustConnect()
 	page = browser.MustPage("https://www.desmos.com/calculator").MustWaitStable()
 
 	if len(os.Args) > 1 {
 		if strings.Contains(os.Args[1], "http") && strings.Contains(os.Args[1], "musescore") {
+			fmt.Printf("\nDownloading from MuseScore: %s\n", os.Args[1])
 			wd, _ := os.Getwd()
 			tempDir := filepath.Join(wd, "temp")
 			exec.Command("npx", "dl-librescore@latest", "-i", os.Args[1], "-t", "midi", "-o", "temp").Run()
@@ -56,8 +63,7 @@ func main() {
 	}
 }
 
-
-func getConfig()  {
+func getConfig() {
 	chunk = func() int {
 		for i, v := range os.Args {
 			if strings.HasPrefix(v, "-cs") {

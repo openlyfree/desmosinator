@@ -23,9 +23,11 @@ type TempoChange struct {
 }
 
 func ParseMidi(filename string) ([]Note, error) {
+	fmt.Printf("\n Loading MIDI file: %s\n", filename)
+
 	res, err := smf.ReadFile(filename)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read MIDI file: %w", err)
 	}
 
 	// Get resolution (ticks per quarter note)
@@ -35,6 +37,9 @@ func ParseMidi(filename string) ([]Note, error) {
 		return nil, fmt.Errorf("unsupported time format: %v", res.TimeFormat)
 	}
 	ticksPerQuarter := float64(resolution)
+
+	fmt.Printf("   ├─ Tracks: %d\n", len(res.Tracks))
+	fmt.Printf("   ├─ Resolution: %d ticks/quarter\n", resolution)
 
 	// 1. Collect all tempo changes
 	var tempoChanges []TempoChange
@@ -57,6 +62,12 @@ func ParseMidi(filename string) ([]Note, error) {
 	sort.Slice(tempoChanges, func(i, j int) bool {
 		return tempoChanges[i].Tick < tempoChanges[j].Tick
 	})
+
+	if len(tempoChanges) > 1 {
+		fmt.Printf("   ├─ Tempo changes: %d (%.1f - %.1f BPM)\n", len(tempoChanges), tempoChanges[0].BPM, tempoChanges[len(tempoChanges)-1].BPM)
+	} else {
+		fmt.Printf("   ├─ Tempo: %.1f BPM\n", tempoChanges[0].BPM)
+	}
 
 	// Helper to convert ticks to seconds
 	tickToSeconds := func(tick int64) float64 {
@@ -140,11 +151,22 @@ func ParseMidi(filename string) ([]Note, error) {
 		}
 	}
 
-	fmt.Printf("Parsed %d notes\n", len(notes))
+	if len(notes) > 0 {
+		duration := notes[len(notes)-1].End
+		for _, n := range notes {
+			if n.End > duration {
+				duration = n.End
+			}
+		}
+		fmt.Printf("   └─ Notes: %d (duration: %.1fs)\n", len(notes), duration)
+	} else {
+		fmt.Printf("   └─ Notes: 0\n")
+	}
 	return notes, nil
 }
 
 func GraphMidi(filename string) {
+	fmt.Println("\n Graphing MIDI to Desmos...")
 	graph("T=0")
 	graph("x=T")
 
@@ -152,16 +174,24 @@ func GraphMidi(filename string) {
 	if err != nil {
 		panic(err)
 	}
+
+	if len(notes) == 0 {
+		fmt.Println(" No notes found in MIDI file")
+		return
+	}
+
 	sort.Slice(notes, func(i, j int) bool {
 		return notes[i].Start < notes[j].Start
 	})
-	chunkSize := 500
-	var fVars, sVars, eVars, vVars []string
 
-	for i := 0; i < len(notes); i += chunkSize {
-		end := min(i+chunkSize, len(notes))
+	numChunks := (len(notes) + chunk - 1) / chunk
+	fmt.Printf("   ├─ Chunk size: %d notes\n", chunk)
+	fmt.Printf("   ├─ Total chunks: %d\n", numChunks)
 
-		// Visual Graph commenting it out for lag
+	var fVars, sVars, eVars, vVars, vis, data, tones []string
+	for i := 0; i < len(notes); i += chunk {
+		end := min(i+chunk, len(notes))
+
 		var sb strings.Builder
 		sb.WriteString("[")
 		for j, n := range notes[i:end] {
@@ -171,7 +201,7 @@ func GraphMidi(filename string) {
 			fmt.Fprintf(&sb, "(%f, %d), (%f, %d), (0/0, 0/0)", n.Start, n.Key, n.End, n.Key)
 		}
 		sb.WriteString("]")
-		graph(sb.String())
+		vis = append(vis, sb.String())
 
 		// Audio Lists
 		var freqSB, startSB, endSB, velSB strings.Builder
@@ -211,16 +241,16 @@ func GraphMidi(filename string) {
 		velSB.WriteString("]")
 
 		// Create unique variable names for this chunk
-		id := fmt.Sprintf("%d", i/chunkSize)
+		id := fmt.Sprintf("%d", i/chunk)
 		fVar := "F_{" + id + "}"
 		sVar := "S_{" + id + "}"
 		eVar := "E_{" + id + "}"
 		vVar := "V_{" + id + "}"
 
-		graph(fVar + "=" + freqSB.String())
-		graph(sVar + "=" + startSB.String())
-		graph(eVar + "=" + endSB.String())
-		graph(vVar + "=" + velSB.String())
+		data = append(data, fVar+"="+freqSB.String())
+		data = append(data, sVar+"="+startSB.String())
+		data = append(data, eVar+"="+endSB.String())
+		data = append(data, vVar+"="+velSB.String())
 
 		fVars = append(fVars, fVar)
 		sVars = append(sVars, sVar)
@@ -228,9 +258,7 @@ func GraphMidi(filename string) {
 		vVars = append(vVars, vVar)
 	}
 
-	var tones []string
 	for i := range fVars {
-		// We use the index as the ID, matching how we created the vars
 		id := fmt.Sprintf("%d", i)
 		dVar := fmt.Sprintf("D_{%s}", id)
 		fVar := fVars[i]
@@ -238,12 +266,26 @@ func GraphMidi(filename string) {
 		eVar := eVars[i]
 		vVar := vVars[i]
 
-		graph(fmt.Sprintf("%s = (T - %s) * (%s - T)", dVar, sVar, eVar))
-		tones = append(tones, fmt.Sprintf("tone(%s[%s >= 0], %s[%s >= 0])", fVar, dVar, vVar, dVar))
+		data = append(data, fmt.Sprintf("%s = (T - %s) * (%s - T)", dVar, sVar, eVar))
+		tones = append(tones, fmt.Sprintf("\\operatorname{tone}(%s\\{%s >= 0\\}, %s\\{%s >= 0\\})", fVar, dVar, vVar, dVar))
 	}
+
+	fmt.Printf("   ├─ Adding %d tone expressions...\n", len(tones))
 	for _, v := range tones {
 		graph(v)
 	}
+
+	fmt.Printf("   ├─ Adding %d visualization expressions...\n", len(vis))
+	for _, v := range vis {
+		graph(v)
+	}
+
+	fmt.Printf("   ├─ Adding %d data expressions...\n", len(data))
+	for _, v := range data {
+		graph(v)
+	}
+
+	fmt.Println("   └─ Done!")
 }
 
 func MidiToHz(m int) float64 {
@@ -268,8 +310,8 @@ func graph(latex string) {
 	}(), latex)
 }
 
-
 func GraphMidiNoVis(filename string) {
+	fmt.Println("\n🎹 Graphing MIDI to Desmos (no visualization)...")
 	graph("T=0")
 	graph("x=T")
 
@@ -277,10 +319,20 @@ func GraphMidiNoVis(filename string) {
 	if err != nil {
 		panic(err)
 	}
+
+	if len(notes) == 0 {
+		fmt.Println("No notes found in MIDI file")
+		return
+	}
+
 	sort.Slice(notes, func(i, j int) bool {
 		return notes[i].Start < notes[j].Start
 	})
 	chunkSize := 500
+	numChunks := (len(notes) + chunkSize - 1) / chunkSize
+	fmt.Printf("   ├─ Chunk size: %d notes\n", chunkSize)
+	fmt.Printf("   ├─ Total chunks: %d\n", numChunks)
+
 	var fVars, sVars, eVars, vVars []string
 
 	for i := 0; i < len(notes); i += chunkSize {
@@ -354,8 +406,10 @@ func GraphMidiNoVis(filename string) {
 		graph(fmt.Sprintf("%s = (T - %s) * (%s - T)", dVar, sVar, eVar))
 		tones = append(tones, fmt.Sprintf("tone(%s[%s >= 0], %s[%s >= 0])", fVar, dVar, vVar, dVar))
 	}
+	fmt.Printf("   ├─ Adding %d tone expressions...\n", len(tones))
 	for _, v := range tones {
 		graph(v)
 	}
-}
 
+	fmt.Println("   └─ Done!")
+}

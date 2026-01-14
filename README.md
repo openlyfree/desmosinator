@@ -13,13 +13,7 @@ Uses Chrome DevTools and Desmos' JavaScript API under the hood.
 ## Install
 
 ```bash
-go install
-```
-
-Or just:
-
-```bash
-go build
+go install github.com/openlyfree/desmosinator
 ```
 
 ## Usage

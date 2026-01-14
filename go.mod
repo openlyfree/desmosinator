@@ -1,4 +1,4 @@
-module desmosinator
+module github.com/openlyfree/desmosinator
 
 go 1.25.5
 
