@@ -13,7 +13,7 @@ Uses Chrome DevTools and Desmos' JavaScript API under the hood.
 ## Install
 
 ```bash
-go install github.com/openlyfree/desmosinator
+go install github.com/openlyfree/desmosinator@latest
 ```
 
 ## Usage
@@ -79,6 +79,7 @@ Opens Desmos in a browser (via [rod](https://github.com/go-rod/rod)), then injec
 - Images are plotted point by point so... be patient
 - The progress bar is a bit wonky, it's like half a feature
 - There may be no examples but just know that they worked some at point in time
+- the thing used to play music from musescore(dl-librescore) is a little weird
 
 ---
 
