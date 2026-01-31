@@ -6,7 +6,6 @@ import (
 	"os"
 	"sync"
 
-	"github.com/schollz/progressbar/v3"
 	_ "golang.org/x/image/webp"
 )
 
@@ -25,14 +24,11 @@ func GraphPhoto(filename string) {
 
 	bounds := m.Bounds()
 
-	height := (bounds.Max.Y - bounds.Min.Y) / step
 	width := (bounds.Max.X - bounds.Min.X) / step
 	pixelsPerRow := (width + 4) / 5
 	if pixelsPerRow == 0 {
 		return
 	}
-	totalPixels := ((height + 4) / 5) * pixelsPerRow
-	bar := progressbar.Default(int64(totalPixels))
 
 	var wg sync.WaitGroup
 
@@ -42,7 +38,6 @@ func GraphPhoto(filename string) {
 			for x := bounds.Min.X; x < bounds.Max.X; x += step {
 				r, g, b, _ := m.At(x, y).RGBA()
 				graphWithColor("("+fmt.Sprint(x)+","+fmt.Sprint(-y)+")", fmt.Sprintf("#%02x%02x%02x", r>>8, g>>8, b>>8))
-				bar.Add(1)
 			}
 		}
 	}
